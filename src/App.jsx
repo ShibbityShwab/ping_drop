@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Activity, Server, Map as MapIcon, XCircle, Zap, Network, Crosshair, Route, Trophy, Sparkles, Bot, Gamepad2, ShieldAlert, TrendingDown, Radar } from 'lucide-react';
 
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+
 // --- Utilities & Constants ---
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -236,12 +238,10 @@ export default function App() {
         .labelResolution(2);
 
       let hoverD = null;
-      fetch('https://unpkg.com/world-atlas/countries-110m.json')
+      fetch('https://unpkg.com/globe.gl/example/datasets/ne_110m_admin_0_countries.geojson')
         .then(res => res.json())
-        .then(world => {
-          // Use topojson if available, otherwise skip country polygons
-          if (window.topojson && mapInstanceRef.current) {
-            const countries = window.topojson.feature(world, world.objects.countries);
+        .then(countries => {
+          if (mapInstanceRef.current) {
             mapInstanceRef.current
               .polygonsData(countries.features)
               .polygonCapColor(d => d === hoverD ? 'rgba(6, 182, 212, 0.2)' : '#030712')
@@ -249,13 +249,16 @@ export default function App() {
               .polygonStrokeColor(() => '#1f2937')
               .onPolygonHover(d => {
                 hoverD = d;
-                mapInstanceRef.current.polygonCapColor(mapInstanceRef.current.polygonCapColor());
-              });
+                mapInstanceRef.current.polygonCapColor(d => d === hoverD ? 'rgba(6, 182, 212, 0.2)' : '#030712');
+              })
+              .polygonLabel(({ properties: d }) =>
+                `<div style="background:rgba(3,7,18,0.9);border:1px solid rgba(6,182,212,0.3);padding:6px 10px;border-radius:6px;font-size:11px;color:#e5e7eb;font-family:monospace;font-weight:bold;letter-spacing:0.05em">
+                  <span style="color:#22d3ee;margin-right:6px">▰</span>${d.ADMIN}
+                </div>`
+              );
           }
         })
-        .catch(() => {
-          // Silently ignore – globe still works without country polygons
-        });
+        .catch(err => console.warn('Country overlay failed:', err));
 
       mapInstanceRef.current.pointOfView({ lat: 20, lng: 0, altitude: 2.2 });
 
@@ -415,7 +418,7 @@ export default function App() {
   const analyzeWithGemini = async (routesData, tInfo, sInfo) => {
     setIsAnalyzing(true);
     setAiAnalysis('');
-    const apiKey = '';
+    const apiKey = GEMINI_API_KEY;
     try {
       const prompt = `You are an elite Esports Network Analyst AI. A player is trying to reduce their ping for competitive matchmaking.
       Player Location: ${sInfo.city}, ${sInfo.country}
