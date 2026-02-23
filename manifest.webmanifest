@@ -1,0 +1,1 @@
+{"name":"Ping Drop","short_name":"PingDrop","description":"A fun and interactive ping drop game","start_url":"/ping_drop/","display":"standalone","background_color":"#ffffff","theme_color":"#ffffff","lang":"en","scope":"/ping_drop/","icons":[{"src":"pwa-icon.svg","sizes":"512x512","type":"image/svg+xml","purpose":"any maskable"}]}
