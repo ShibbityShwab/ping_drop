@@ -6,6 +6,18 @@ const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 // --- Utilities & Constants ---
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const isWebGLAvailable = () => {
+  try {
+    const canvas = document.createElement('canvas');
+    return !!(
+      window.WebGLRenderingContext &&
+      (canvas.getContext('webgl2') || canvas.getContext('webgl'))
+    );
+  } catch {
+    return false;
+  }
+};
+
 const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
   const R = 6371;
   const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -81,12 +93,69 @@ const BACKBONE_ALERTS = [
   { id: 3, time: '2 hrs ago',   severity: 'low',    region: 'AP-Northeast (Tokyo)',      msg: 'Landing Station maintenance. Routing switched to redundant fiber.' },
 ];
 
+// --- 2D FALLBACK MAP (rendered when WebGL is unavailable) ---
+const FallbackMap = ({ routes, activeRouteId }) => {
+  const W = 800;
+  const H = 400;
+  const px = (lon) => ((lon + 180) / 360) * W;
+  const py = (lat) => ((90 - lat) / 180) * H;
+  const active = routes.find((r) => r.id === activeRouteId) || routes[0];
+
+  return (
+    <div className="absolute inset-0 bg-gray-950 overflow-hidden">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="xMidYMid slice">
+        {BACKBONE_EDGES.map(([n1, n2], i) => (
+          <line
+            key={`e${i}`}
+            x1={px(BACKBONE_NODES[n1].lon)} y1={py(BACKBONE_NODES[n1].lat)}
+            x2={px(BACKBONE_NODES[n2].lon)} y2={py(BACKBONE_NODES[n2].lat)}
+            stroke="rgba(55,65,81,0.5)" strokeWidth="1"
+          />
+        ))}
+        {Object.entries(BACKBONE_NODES).map(([name, node]) => (
+          <g key={name}>
+            <circle cx={px(node.lon)} cy={py(node.lat)} r={node.isSubmarine ? 3 : 2} fill="rgba(107,114,128,0.8)" />
+            <text x={px(node.lon) + 5} y={py(node.lat) + 3} fill="rgba(156,163,175,0.6)" fontSize="9" fontFamily="monospace">{name}</text>
+          </g>
+        ))}
+        {routes.map((route) => {
+          const isActive = active && route.id === active.id;
+          const pts = route.hops.map((h) => `${px(h.lon)},${py(h.lat)}`).join(' ');
+          return (
+            <polyline
+              key={route.id}
+              points={pts}
+              fill="none"
+              stroke={route.color}
+              strokeWidth={isActive ? 3 : 1.2}
+              opacity={isActive ? 1 : 0.35}
+              strokeDasharray={isActive ? undefined : '4 4'}
+            />
+          );
+        })}
+        {active && active.hops.map((h, i) => (
+          <circle
+            key={`h${i}`}
+            cx={px(h.lon)} cy={py(h.lat)}
+            r={h.isStart || h.isFinal ? 5 : 3}
+            fill={active.color} stroke="#030712" strokeWidth="1.5"
+          />
+        ))}
+      </svg>
+      <p className="absolute bottom-3 left-0 right-0 text-center text-[9px] sm:text-[10px] font-mono uppercase tracking-widest text-gray-500 px-4">
+        WebGL disabled in this browser — 2D fallback mode
+      </p>
+    </div>
+  );
+};
+
 export default function App() {
   const [target, setTarget] = useState('');
   const [isTracing, setIsTracing] = useState(false);
   const [error, setError] = useState(null);
   const [statusText, setStatusText] = useState('SYSTEM STANDBY. Awaiting matchmaking vector...');
   const [globeLoaded, setGlobeLoaded] = useState(false);
+  const [globeFailed, setGlobeFailed] = useState(false);
 
   const [targetInfo, setTargetInfo] = useState(null);
   const [sourceInfo, setSourceInfo] = useState(null);
@@ -183,6 +252,11 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!isWebGLAvailable()) {
+      console.warn('WebGL unavailable — using 2D fallback map.');
+      setGlobeFailed(true);
+      return;
+    }
     let checkInterval;
     const loadGlobe = () => {
       if (window.Globe) { setGlobeLoaded(true); return; }
@@ -197,6 +271,7 @@ export default function App() {
       script.id = 'globe-gl-script';
       script.src = 'https://unpkg.com/globe.gl';
       script.onload = () => setGlobeLoaded(true);
+      script.onerror = () => setGlobeFailed(true);
       document.head.appendChild(script);
     };
     loadGlobe();
@@ -205,37 +280,44 @@ export default function App() {
 
   useEffect(() => {
     let resizeObserver;
-    if (globeLoaded && mapRef.current && !mapInstanceRef.current) {
+    if (globeLoaded && !globeFailed && mapRef.current && !mapInstanceRef.current) {
       const initWidth = mapRef.current.clientWidth || 800;
       const initHeight = mapRef.current.clientHeight || 400;
 
-      mapInstanceRef.current = window.Globe()(mapRef.current)
-        .width(initWidth)
-        .height(initHeight)
-        .showGlobe(true)
-        .showAtmosphere(true)
-        .atmosphereColor('#06b6d4')
-        .atmosphereAltitude(0.15)
-        .backgroundColor('rgba(0,0,0,0)')
-        .arcColor('color')
-        .arcAltitude('altitude')
-        .arcDashLength(0.4)
-        .arcDashGap(0.2)
-        .arcDashInitialGap(() => Math.random())
-        .arcDashAnimateTime('animateTime')
-        .arcStroke('stroke')
-        .pointColor('color')
-        .pointAltitude(0.015)
-        .pointRadius('radius')
-        .ringColor('color')
-        .ringMaxRadius('maxRadius')
-        .ringPropagationSpeed('propagationSpeed')
-        .ringRepeatPeriod('repeatPeriod')
-        .labelColor('color')
-        .labelSize('size')
-        .labelDotRadius(0.2)
-        .labelAltitude('altitude')
-        .labelResolution(2);
+      try {
+        mapInstanceRef.current = window.Globe()(mapRef.current)
+          .width(initWidth)
+          .height(initHeight)
+          .showGlobe(true)
+          .showAtmosphere(true)
+          .atmosphereColor('#06b6d4')
+          .atmosphereAltitude(0.15)
+          .backgroundColor('rgba(0,0,0,0)')
+          .arcColor('color')
+          .arcAltitude('altitude')
+          .arcDashLength(0.4)
+          .arcDashGap(0.2)
+          .arcDashInitialGap(() => Math.random())
+          .arcDashAnimateTime('animateTime')
+          .arcStroke('stroke')
+          .pointColor('color')
+          .pointAltitude(0.015)
+          .pointRadius('radius')
+          .ringColor('color')
+          .ringMaxRadius('maxRadius')
+          .ringPropagationSpeed('propagationSpeed')
+          .ringRepeatPeriod('repeatPeriod')
+          .labelColor('color')
+          .labelSize('size')
+          .labelDotRadius(0.2)
+          .labelAltitude('altitude')
+          .labelResolution(2);
+      } catch (err) {
+        console.warn('Globe init failed, falling back to 2D map:', err);
+        mapInstanceRef.current = null;
+        setGlobeFailed(true);
+        return;
+      }
 
       let hoverD = null;
       fetch('https://unpkg.com/globe.gl/example/datasets/ne_110m_admin_0_countries.geojson')
@@ -260,7 +342,11 @@ export default function App() {
         })
         .catch(err => console.warn('Country overlay failed:', err));
 
-      mapInstanceRef.current.pointOfView({ lat: 20, lng: 0, altitude: 2.2 });
+      try {
+        mapInstanceRef.current.pointOfView({ lat: 20, lng: 0, altitude: 2.2 });
+      } catch (err) {
+        console.warn('Globe camera init failed:', err);
+      }
 
       resizeObserver = new ResizeObserver(entries => {
         for (const entry of entries) {
@@ -276,7 +362,7 @@ export default function App() {
     return () => {
       if (resizeObserver) resizeObserver.disconnect();
     };
-  }, [globeLoaded]);
+  }, [globeLoaded, globeFailed]);
 
   const updateMapVisuals = (currentRoutes, activeId) => {
     if (!mapInstanceRef.current) return;
@@ -708,18 +794,24 @@ export default function App() {
                 <span className="font-bold tracking-widest text-[8px] sm:text-[10px] uppercase text-gray-300 truncate">Live Infrastructure Map</span>
               </div>
               <div className="hidden sm:flex items-center space-x-2 bg-gray-950/80 backdrop-blur px-3 py-1.5 rounded-lg border border-white/10">
-                <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">Interactive WebGL</span>
+                <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">{globeFailed ? '2D Fallback' : 'Interactive WebGL'}</span>
               </div>
             </div>
 
             <div className="flex-grow relative cursor-move">
-              {!globeLoaded && (
-                <div className="absolute inset-0 flex items-center justify-center text-cyan-500 flex-col bg-gray-950 z-20">
-                  <Activity className="w-6 h-6 sm:w-8 sm:h-8 animate-spin mb-3 sm:mb-4" />
-                  <p className="text-[10px] sm:text-xs font-mono tracking-widest uppercase text-center px-4">Initializing 3D Engine...</p>
-                </div>
+              {globeFailed ? (
+                <FallbackMap routes={routes} activeRouteId={activeRouteId} />
+              ) : (
+                <>
+                  {!globeLoaded && (
+                    <div className="absolute inset-0 flex items-center justify-center text-cyan-500 flex-col bg-gray-950 z-20">
+                      <Activity className="w-6 h-6 sm:w-8 sm:h-8 animate-spin mb-3 sm:mb-4" />
+                      <p className="text-[10px] sm:text-xs font-mono tracking-widest uppercase text-center px-4">Initializing 3D Engine...</p>
+                    </div>
+                  )}
+                  <div ref={mapRef} className="absolute inset-0 w-full h-full outline-none"></div>
+                </>
               )}
-              <div ref={mapRef} className="absolute inset-0 w-full h-full outline-none"></div>
               <div className="absolute inset-0 shadow-[inset_0_0_50px_rgba(0,0,0,0.8)] pointer-events-none"></div>
             </div>
           </div>
