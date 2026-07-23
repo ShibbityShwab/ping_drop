@@ -25,5 +25,5 @@ export default defineConfig({
       },
     }),
   ],
-  base: "/ping_drop/",
+  base: "/ping-drop/",
 });
